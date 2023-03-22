@@ -3,6 +3,7 @@ pragma solidity 0.8.2;
 
 import "./interfaces/IERC721.sol";
 import "./interfaces/INonfungiblePositionManager.sol";
+import "./interfaces/IUniswapV3Staker.sol";
 // import "./libraries/SafeERC20.sol";
 
 import "./PPIToken.sol";
@@ -27,6 +28,7 @@ contract FarmController is NeedInitialize, WhitelistedRole {
     struct PoolInfo {
         address token0; // Address of token0 contract.
         address token1; // Address of token1 contract.
+        uint24 fee; // fee tier of the pool
         uint256 allocPoint; // How many allocation points assigned to this pool. CAKEs to distribute per block.
         uint256 lastRewardTime; // Last block number that CAKEs distribution occurs.
         uint256 totalSupply; // token total supply.
@@ -39,6 +41,8 @@ contract FarmController is NeedInitialize, WhitelistedRole {
         bool active;    //true if the token id is deposited into address(this)
         address token0; // Address of token0 contract.
         address token1; // Address of token1 contract.
+        uint24 fee; // fee tier of the pool
+        address owner; // owner of NFT
     }
 
     PPIToken public ppi;
@@ -53,7 +57,7 @@ contract FarmController is NeedInitialize, WhitelistedRole {
     PoolInfo[] public poolInfo;
     // Info of each user that stakes LP tokens.
     mapping(uint256 => mapping(address => UserInfo)) public userInfo;
-    //uint256: tokenid 
+    //uint256: tokenid to pool info
     mapping(uint256 => PoolInfoByTokenId) public poolInfoByTokenId;
     // Total allocation points. Must be the sum of all allocation points in all pools.
     uint256 public totalAllocPoint;
@@ -69,6 +73,12 @@ contract FarmController is NeedInitialize, WhitelistedRole {
     bool public claimable;
     // NonfungiblePositionManager NFT token tracker
     address public NonfungiblePositionManager;
+    //allcapoint reward for total liquidity
+    uint256 public rewardAllocaPointForAmount;
+    //allcapoint reward for liqudity concentration in uniswap v3 pool
+    uint256 public rewardAllocaPointForConcentration;
+    // IUniswapV3Staker
+    IUniswapV3Staker public UniswapV3Staker;
 
     event Deposit(address indexed user, uint256 indexed pid, uint256 amount);
     event Withdraw(address indexed user, uint256 indexed pid, uint256 amount);
@@ -87,7 +97,8 @@ contract FarmController is NeedInitialize, WhitelistedRole {
         address _ppi, // reward token
         uint256 _startTime,
         address _token0,// first pool token0
-        address _token1, // first pool token1
+        address _token1, // first pool token1,
+        uint24 _fee, // fee tier
         address _NonfungiblePositionManager
     ) external onlyInitializeOnce {
         _addWhitelistAdmin(msg.sender);
@@ -101,12 +112,15 @@ contract FarmController is NeedInitialize, WhitelistedRole {
         votingEscrow = VotingEscrow(_votingEscrow);
 
         NonfungiblePositionManager = _NonfungiblePositionManager;
+        
+        UniswapV3Staker = IUniswapV3Staker(address(0));
 
         // first farming pool
         poolInfo.push(
             PoolInfo({
                 token0: _token0,
                 token1: _token1,
+                fee: _fee,
                 allocPoint: 1000,
                 lastRewardTime: _startTime,
                 totalSupply: 0,
@@ -117,6 +131,8 @@ contract FarmController is NeedInitialize, WhitelistedRole {
 
         totalAllocPoint = 1000;
         k = 33;
+        rewardAllocaPointForAmount = 5;
+        rewardAllocaPointForConcentration = 5;
     }
 
     function poolLength() external view returns (uint256) {
@@ -137,12 +153,18 @@ contract FarmController is NeedInitialize, WhitelistedRole {
             }
         }
     }
-
+    // Update the given pool's reward allocation point. Can only be called by the owner.
+    function setUniswapV3Staker(
+        address _UniswapV3Staker
+    ) external onlyWhitelistAdmin {
+        UniswapV3Staker = IUniswapV3Staker(_UniswapV3Staker);
+    }
     // Add a new lp to the pool. Can only be called by the whitelist admin.
     function add(
         uint256 _allocPoint,
         address _token0,
         address _token1,
+        uint24 _fee,
         uint256 _startTime,
         bool _withUpdate
     ) external onlyWhitelistAdmin {
@@ -155,6 +177,7 @@ contract FarmController is NeedInitialize, WhitelistedRole {
             PoolInfo({
                 token0: _token0,
                 token1: _token1,
+                fee: _fee,
                 allocPoint: _allocPoint,
                 lastRewardTime: _startTime,
                 totalSupply: 0,
@@ -191,7 +214,11 @@ contract FarmController is NeedInitialize, WhitelistedRole {
     function updatePool(uint256 _pid) public {
         _updatePool(_pid);
     }
-
+    // set reward alloca points
+    function updateRewardAllocaPoint(uint256 _rewardAllocaPointForAmount, uint256 _rewardAllocaPointForConcentration) external onlyWhitelistAdmin {
+        rewardAllocaPointForAmount = _rewardAllocaPointForAmount;
+        rewardAllocaPointForConcentration = _rewardAllocaPointForConcentration;
+    }
     // Update reward variables of the given pool to be up-to-date.
     function _updatePool(uint256 _pid) internal {
         PoolInfo storage pool = poolInfo[_pid];
@@ -208,6 +235,7 @@ contract FarmController is NeedInitialize, WhitelistedRole {
                 block.timestamp
             ) * pool.allocPoint) / totalAllocPoint;
         // reward allocation
+        reward = reward * rewardAllocaPointForAmount/(rewardAllocaPointForAmount+rewardAllocaPointForConcentration);
         ppi.mint(treasuryAddr, (reward * 15) / 100);
         ppi.mint(devAddr, (reward * 15) / 100);
         ppi.mint(marketAddr, (reward * 20) / 100);
@@ -270,7 +298,7 @@ contract FarmController is NeedInitialize, WhitelistedRole {
             ,
             address token0,
             address token1,
-            ,
+            uint24 fee,
             ,
             ,
             uint128 liquidity,
@@ -278,7 +306,7 @@ contract FarmController is NeedInitialize, WhitelistedRole {
             ,
             ,
         ) = INonfungiblePositionManager(NonfungiblePositionManager).positions(tokenId);
-        require(pool.token0 == token0 && pool.token1 == token1, "FarmController: tokenId does not match pid");
+        require(pool.token0 == token0 && pool.token1 == token1 && pool.fee == fee, "FarmController: tokenId does not match pid");
         PoolInfoByTokenId storage poolInfoEntry = poolInfoByTokenId[tokenId];
         require(poolInfoEntry.active == false, "FarmController: tokenId already exists in the pool");
         if (liquidity > 0) {
@@ -287,6 +315,8 @@ contract FarmController is NeedInitialize, WhitelistedRole {
             poolInfoEntry.active = true;
             poolInfoEntry.token0 = token0;
             poolInfoEntry.token1 = token1;
+            poolInfoEntry.fee = fee;
+            poolInfoEntry.owner = msg.sender;
             pool.totalSupply += liquidity;
             IERC721(NonfungiblePositionManager).safeTransferFrom(
                 address(msg.sender),
@@ -310,7 +340,7 @@ contract FarmController is NeedInitialize, WhitelistedRole {
             ,
             address token0,
             address token1,
-            ,
+            uint24 fee,
             ,
             ,
             uint128 liquidity,
@@ -318,9 +348,15 @@ contract FarmController is NeedInitialize, WhitelistedRole {
             ,
             ,
         ) = INonfungiblePositionManager(NonfungiblePositionManager).positions(tokenId);
-        require(pool.token0 == token0 && pool.token1 == token1, "FarmController: tokenId does not match pid");
+        require(pool.token0 == token0 && pool.token1 == token1 && pool.fee == fee, "FarmController: tokenId does not match pid");
         PoolInfoByTokenId storage poolInfoEntry = poolInfoByTokenId[tokenId];
-        require(poolInfoEntry.active == true, "FarmController: tokenId does not exist in the pool");
+        require(poolInfoEntry.active == true && poolInfoEntry.owner == msg.sender, "FarmController: only active owner can withdraw lp in the pool");
+        (
+            ,
+            uint48 numberOfStakes,
+            ,
+        ) = UniswapV3Staker.deposits(tokenId);
+        require(numberOfStakes == 0, "FarmController: must unstake from UniswapV3Staker");
         _updatePool(_pid);
         reward = _updateUser(_pid, msg.sender);
         if (liquidity > 0) {
@@ -368,5 +404,17 @@ contract FarmController is NeedInitialize, WhitelistedRole {
 
     function userUsedTokenIds(address user, uint256 pid) external view returns (uint256[] memory tokenIds) {
         return userInfo[pid][user].tokenIds;
+    }
+    function getPoolInfoByTokenId(uint256 tokenId) external view returns (PoolInfoByTokenId memory poolInfoEntry) {
+        return poolInfoByTokenId[tokenId];
+    }
+    function nonBoostFactor() external view returns(uint) {
+        return k;
+    }
+    function boostTotalSupply() external view returns(uint) {
+        return votingEscrow.totalSupply();
+    }
+    function boostBalance(address _user) external view returns(uint) {
+        return votingEscrow.balanceOf(_user);
     }
 }
