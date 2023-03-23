@@ -153,6 +153,13 @@ contract FarmController is NeedInitialize, WhitelistedRole {
             }
         }
     }
+    function getAllocPointByPid(uint256 pid)
+        external
+        view
+        returns (uint256 allocPoint)
+    {
+        return poolInfo[pid].allocPoint;
+    }
     // Update the given pool's reward allocation point. Can only be called by the owner.
     function setUniswapV3Staker(
         address _UniswapV3Staker
@@ -306,7 +313,7 @@ contract FarmController is NeedInitialize, WhitelistedRole {
             ,
             ,
         ) = INonfungiblePositionManager(NonfungiblePositionManager).positions(tokenId);
-        require(pool.token0 == token0 && pool.token1 == token1 && pool.fee == fee, "FarmController: tokenId does not match pid");
+        require(((pool.token0 == token0 && pool.token1 == token1) || (pool.token0 == token1 && pool.token1 == token0)) && pool.fee == fee, "FarmController: tokenId does not match pid");
         PoolInfoByTokenId storage poolInfoEntry = poolInfoByTokenId[tokenId];
         require(poolInfoEntry.active == false, "FarmController: tokenId already exists in the pool");
         if (liquidity > 0) {
@@ -348,7 +355,7 @@ contract FarmController is NeedInitialize, WhitelistedRole {
             ,
             ,
         ) = INonfungiblePositionManager(NonfungiblePositionManager).positions(tokenId);
-        require(pool.token0 == token0 && pool.token1 == token1 && pool.fee == fee, "FarmController: tokenId does not match pid");
+        require(((pool.token0 == token0 && pool.token1 == token1) || (pool.token0 == token1 && pool.token1 == token0)) && pool.fee == fee, "FarmController: tokenId does not match pid");
         PoolInfoByTokenId storage poolInfoEntry = poolInfoByTokenId[tokenId];
         require(poolInfoEntry.active == true && poolInfoEntry.owner == msg.sender, "FarmController: only active owner can withdraw lp in the pool");
         (
@@ -404,9 +411,6 @@ contract FarmController is NeedInitialize, WhitelistedRole {
 
     function userUsedTokenIds(address user, uint256 pid) external view returns (uint256[] memory tokenIds) {
         return userInfo[pid][user].tokenIds;
-    }
-    function getPoolInfoByTokenId(uint256 tokenId) external view returns (PoolInfoByTokenId memory poolInfoEntry) {
-        return poolInfoByTokenId[tokenId];
     }
     function nonBoostFactor() external view returns(uint) {
         return k;
