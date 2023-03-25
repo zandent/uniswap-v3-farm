@@ -160,6 +160,9 @@ contract FarmController is NeedInitialize, WhitelistedRole {
     {
         return poolInfo[pid].allocPoint;
     }
+    function getPoolInfoByTokenId(uint256 tokenId) external view returns (PoolInfoByTokenId memory poolInfoEntry){
+        return poolInfoByTokenId[tokenId];
+    }
     // Update the given pool's reward allocation point. Can only be called by the owner.
     function setUniswapV3Staker(
         address _UniswapV3Staker
@@ -420,5 +423,34 @@ contract FarmController is NeedInitialize, WhitelistedRole {
     }
     function boostBalance(address _user) external view returns(uint) {
         return votingEscrow.balanceOf(_user);
+    }
+    function onERC721Received(
+        address,
+        address from,
+        uint256 tokenId,
+        bytes calldata data
+    ) external returns (bytes4) {
+        // require(
+        //     msg.sender == address(nonfungiblePositionManager),
+        //     'UniswapV3Staker::onERC721Received: not a univ3 nft'
+        // );
+
+        // (, , , , , int24 tickLower, int24 tickUpper, , , , , ) = nonfungiblePositionManager.positions(tokenId);
+
+        // deposits[tokenId] = Deposit({owner: from, numberOfStakes: 0, tickLower: tickLower, tickUpper: tickUpper});
+        // emit DepositTransferred(tokenId, address(0), from);
+
+        // if (data.length > 0) {
+        //     if (data.length == 160) {
+        //         _stakeToken(abi.decode(data, (IncentiveKey)), tokenId);
+        //     } else {
+        //         IncentiveKey[] memory keys = abi.decode(data, (IncentiveKey[]));
+        //         for (uint256 i = 0; i < keys.length; i++) {
+        //             _stakeToken(keys[i], tokenId);
+        //         }
+        //     }
+        // }
+        // require(false, "onERC721Received forbidden");
+        return this.onERC721Received.selector;
     }
 }
