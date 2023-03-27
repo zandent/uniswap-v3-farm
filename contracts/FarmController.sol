@@ -87,6 +87,7 @@ contract FarmController is NeedInitialize, WhitelistedRole {
         uint256 indexed pid,
         uint256 workingSupply
     );
+    event Claim(address indexed user, uint256 indexed pid, uint256 amount);
 
     function initialize(
         address _treasuryAddr,
@@ -336,6 +337,18 @@ contract FarmController is NeedInitialize, WhitelistedRole {
         }
         _checkpoint(_pid, msg.sender);
         emit Deposit(msg.sender, _pid, liquidity);
+    }
+
+    // Claim reward from farmer and staker inherited from Deposit
+    function claim(uint256 _pid)
+        external
+        returns (uint256 reward)
+    {
+        _updatePool(_pid);
+        reward = _updateUser(_pid, msg.sender);
+        _checkpoint(_pid, msg.sender);
+        UniswapV3Staker.claimReward(address(ppi), msg.sender, 0);
+        emit Claim(msg.sender, _pid, reward);
     }
 
     // Withdraw tokens from Controller.
