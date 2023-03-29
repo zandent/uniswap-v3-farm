@@ -94,7 +94,7 @@ contract FarmController is NeedInitialize, WhitelistedRole {
         address _marketAddr,
         address _devAddr,
         address _votingEscrow,
-        address _ppiRate,
+        // address _ppiRate,
         address _ppi, // reward token
         uint256 _startTime,
         address _token0,// first pool token0
@@ -104,7 +104,7 @@ contract FarmController is NeedInitialize, WhitelistedRole {
     ) external onlyInitializeOnce {
         _addWhitelistAdmin(msg.sender);
 
-        ppiRate = _ppiRate;
+        // ppiRate = _ppiRate;
         treasuryAddr = _treasuryAddr;
         marketAddr = _marketAddr;
         devAddr = _devAddr;
@@ -132,8 +132,6 @@ contract FarmController is NeedInitialize, WhitelistedRole {
 
         totalAllocPoint = 1000;
         k = 33;
-        rewardAllocaPointForAmount = 5;
-        rewardAllocaPointForConcentration = 5;
     }
 
     function poolLength() external view returns (uint256) {
@@ -225,11 +223,6 @@ contract FarmController is NeedInitialize, WhitelistedRole {
     function updatePool(uint256 _pid) public {
         _updatePool(_pid);
     }
-    // set reward alloca points
-    function updateRewardAllocaPoint(uint256 _rewardAllocaPointForAmount, uint256 _rewardAllocaPointForConcentration) external onlyWhitelistAdmin {
-        rewardAllocaPointForAmount = _rewardAllocaPointForAmount;
-        rewardAllocaPointForConcentration = _rewardAllocaPointForConcentration;
-    }
     // Update reward variables of the given pool to be up-to-date.
     function _updatePool(uint256 _pid) internal {
         PoolInfo storage pool = poolInfo[_pid];
@@ -241,16 +234,11 @@ contract FarmController is NeedInitialize, WhitelistedRole {
             return;
         }
         uint256 reward =
-            (PPIRate(ppiRate).calculateReward(
-                pool.lastRewardTime,
-                block.timestamp
-            ) * pool.allocPoint) / totalAllocPoint;
-        // reward allocation
-        reward = reward * rewardAllocaPointForAmount/(rewardAllocaPointForAmount+rewardAllocaPointForConcentration);
-        ppi.mint(treasuryAddr, (reward * 15) / 100);
-        ppi.mint(devAddr, (reward * 15) / 100);
-        ppi.mint(marketAddr, (reward * 20) / 100);
-        reward = (reward * 50) / 100;
+            (ppi.balanceOf(address(this)) * pool.allocPoint) / totalAllocPoint;
+        // ppi.transfer(treasuryAddr, (reward * 15) / 100);
+        // ppi.transfer(devAddr, (reward * 15) / 100);
+        // ppi.transfer(marketAddr, (reward * 20) / 100);
+        // reward = (reward * 50) / 100;
         // update prefix sum
         pool.accRewardPerShare =
             pool.accRewardPerShare +
@@ -272,7 +260,7 @@ contract FarmController is NeedInitialize, WhitelistedRole {
         reward += user.pendingReward;
         if (claimable) {
             user.pendingReward = 0;
-            ppi.mint(_user, reward);
+            ppi.transfer(_user, reward);
         } else {
             user.pendingReward = reward;
         }
@@ -296,10 +284,13 @@ contract FarmController is NeedInitialize, WhitelistedRole {
     }
 
     // Deposit tokens to Controller for reward allocation.
-    function deposit(uint256 _pid, uint256 tokenId)
+    function deposit(uint256 _pid, uint256 tokenId, IUniswapV3Staker.IncentiveKey memory key)
         external
         returns (uint256 reward)
     {
+        if  (block.timestamp >= key.endTime) {
+            UniswapV3Staker.endIncentive(key);
+        }
         _updatePool(_pid);
         reward = _updateUser(_pid, msg.sender);
         PoolInfo storage pool = poolInfo[_pid];
@@ -329,6 +320,7 @@ contract FarmController is NeedInitialize, WhitelistedRole {
             poolInfoEntry.fee = fee;
             poolInfoEntry.owner = msg.sender;
             pool.totalSupply += liquidity;
+            UniswapV3Staker.stakeToken(key, tokenId, msg.sender);
             IERC721(NonfungiblePositionManager).safeTransferFrom(
                 address(msg.sender),
                 address(this),
@@ -340,22 +332,28 @@ contract FarmController is NeedInitialize, WhitelistedRole {
     }
 
     // Claim reward from farmer and staker inherited from Deposit
-    function claim(uint256 _pid)
+    function claim(uint256 _pid,  IUniswapV3Staker.IncentiveKey memory key1,  IUniswapV3Staker.IncentiveKey memory key2, uint256 tokenId)
         external
         returns (uint256 reward)
-    {
+    {   
+        if  (block.timestamp >= key1.endTime) {
+            UniswapV3Staker.endIncentive(key1);
+        }
         _updatePool(_pid);
         reward = _updateUser(_pid, msg.sender);
         _checkpoint(_pid, msg.sender);
-        UniswapV3Staker.claimReward(address(ppi), msg.sender, 0);
+        UniswapV3Staker.unstakeClaimRewardandStakeNew(key1, key2, tokenId, address(ppi), msg.sender);
         emit Claim(msg.sender, _pid, reward);
     }
 
     // Withdraw tokens from Controller.
-    function withdraw(uint256 _pid, uint256 tokenId)
+    function withdraw(uint256 _pid, uint256 tokenId, IUniswapV3Staker.IncentiveKey memory key)
         external
         returns (uint256 reward)
-    {
+    {   
+        if  (block.timestamp >= key.endTime) {
+            UniswapV3Staker.endIncentive(key);
+        }
         PoolInfo storage pool = poolInfo[_pid];
         UserInfo storage user = userInfo[_pid][msg.sender];
         (
@@ -379,13 +377,18 @@ contract FarmController is NeedInitialize, WhitelistedRole {
             uint48 numberOfStakes,
             ,
         ) = UniswapV3Staker.deposits(tokenId);
-        require(numberOfStakes == 0, "FarmController: must unstake from UniswapV3Staker");
+        require(numberOfStakes == 0 || numberOfStakes == 1, "FarmController: must have 0 or 1 active incentive");
         _updatePool(_pid);
         reward = _updateUser(_pid, msg.sender);
         if (liquidity > 0) {
             user.amount -= liquidity;
             pool.totalSupply -= liquidity;
             poolInfoEntry.active = false;
+            if (numberOfStakes == 1){
+                // make sure stakes[id][key] has value
+                UniswapV3Staker.unstakeToken(key, tokenId, msg.sender);
+            }
+            UniswapV3Staker.claimReward(address(ppi), msg.sender, 0);
             IERC721(NonfungiblePositionManager).safeTransferFrom(address(this), address(msg.sender), tokenId);
             //TODO; maybe remove the entry of the userinfo tokenIds. ONLY for frontend
         }

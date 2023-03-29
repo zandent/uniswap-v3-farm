@@ -1,10 +1,21 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 pragma solidity =0.8.2;
-
+pragma abicoder v2;
 /// @title Uniswap V3 Staker Interface
 /// @notice Allows staking nonfungible liquidity tokens in exchange for reward tokens
 interface IUniswapV3Staker {
-
+    /// @param rewardToken The token being distributed as a reward
+    /// @param pool The Uniswap V3 pool
+    /// @param startTime The time when the incentive program begins
+    /// @param endTime The time when rewards stop accruing
+    /// @param refundee The address which receives any remaining reward tokens when the incentive is ended
+    struct IncentiveKey {
+        address rewardToken;
+        address pool;
+        uint256 startTime;
+        uint256 endTime;
+        address refundee;
+    }
     /// @notice Returns information about a deposited NFT
     /// @return owner The owner of the deposited NFT
     /// @return numberOfStakes Counter of how many incentives for which the liquidity is staked
@@ -29,4 +40,29 @@ interface IUniswapV3Staker {
         address to,
         uint256 amountRequested
     ) external returns (uint256 reward);
+    /// @notice Stakes a Uniswap V3 LP token
+    /// @param key The key of the incentive for which to stake the NFT
+    /// @param tokenId The ID of the token to stake
+    /// @param owner The owner of the token to stake
+    function stakeToken(IncentiveKey memory key, uint256 tokenId, address owner) external;
+
+    /// @notice Unstakes a Uniswap V3 LP token
+    /// @param key The key of the incentive for which to unstake the NFT
+    /// @param tokenId The ID of the token to unstake
+    /// @param owner The owner of the token to stake
+    function unstakeToken(IncentiveKey memory key, uint256 tokenId, address owner) external;
+
+    /// @notice unstake key1, claim all rewards from previous icnentives and stake to key2
+    /// @param key1 The key of the incentive
+    /// @param key2 The key of the incentive
+    /// @param tokenId The ID of the token
+    /// @param rewardToken The token being distributed as a reward
+    /// @param to The address where claimed rewards will be sent to
+    function unstakeClaimRewardandStakeNew(IncentiveKey memory key1, IncentiveKey memory key2, uint256 tokenId, address rewardToken,
+            address to) external;
+    
+    /// @notice Ends an incentive after the incentive end time has passed and all stakes have been withdrawn
+    /// @param key Details of the incentive to end
+    /// @return refund The remaining reward tokens when the incentive is ended
+    function endIncentive(IncentiveKey memory key) external returns (uint256 refund);
 }
