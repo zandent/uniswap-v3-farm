@@ -49,10 +49,11 @@ contract FarmController is NeedInitialize, WhitelistedRole {
     VotingEscrow public votingEscrow;
     // user_boost_share = min(
     //   user_stake_amount,
-    //   k% * user_stake_amount + (1 - k%) * total_stake_amount * (user_locked_share / total_locked_share)
+    //   k% * user_stake_amount + k2% * total_stake_amount * (userReward_claimed_for_last_incentive / total_reward_claimed_for_last_incentive) + (1 - k% - k2%) * total_stake_amount * (user_locked_share / total_locked_share)
     // )
     uint256 public k;
-
+    uint256 public k2;
+    uint256 public incentivePeriod;
     // Info of each pool.
     PoolInfo[] public poolInfo;
     // Info of each user that stakes LP tokens.
@@ -100,7 +101,8 @@ contract FarmController is NeedInitialize, WhitelistedRole {
         address _token0,// first pool token0
         address _token1, // first pool token1,
         uint24 _fee, // fee tier
-        address _NonfungiblePositionManager
+        address _NonfungiblePositionManager,
+        uint256 _incentivePeriod
     ) external onlyInitializeOnce {
         _addWhitelistAdmin(msg.sender);
 
@@ -132,6 +134,8 @@ contract FarmController is NeedInitialize, WhitelistedRole {
 
         totalAllocPoint = 1000;
         k = 33;
+        k2 = 33;
+        incentivePeriod = _incentivePeriod;
     }
 
     function poolLength() external view returns (uint256) {
@@ -267,15 +271,28 @@ contract FarmController is NeedInitialize, WhitelistedRole {
         user.rewardPerShare = pool.accRewardPerShare;
     }
 
-    function _checkpoint(uint256 _pid, address _user) internal {
+    function _checkpoint(uint256 _pid, address _user, IUniswapV3Staker.IncentiveKey memory lastKey) internal {
         PoolInfo storage pool = poolInfo[_pid];
         UserInfo storage user = userInfo[_pid][_user];
         uint256 l = (k * user.amount) / 100;
         uint256 votingTotal = votingEscrow.totalSupply();
+        IUniswapV3Staker.IncentiveKeyIgnoringPool memory incentiveKeyIgnoringPool = IUniswapV3Staker.IncentiveKeyIgnoringPool({
+            rewardToken: lastKey.rewardToken,
+            startTime: lastKey.startTime,
+            endTime: lastKey.endTime,
+            refundee: lastKey.refundee
+        });
+        bytes32 incentiveIdIP = keccak256(abi.encode(incentiveKeyIgnoringPool));
+        uint256 userReward = UniswapV3Staker.userRewardProduced(_user, incentiveIdIP);
+        (uint256 totalRewardClaimed, , ,) = UniswapV3Staker.incentives(incentiveIdIP);
         if (votingTotal > 0)
             l +=
                 (((pool.totalSupply * votingEscrow.balanceOf(_user)) /
-                    votingTotal) * (100 - k)) /
+                    votingTotal) * (100 - k - k2)) /
+                100;
+        if (totalRewardClaimed > 0)
+             l += (((pool.totalSupply * userReward) /
+                    totalRewardClaimed) * k2) /
                 100;
         if (l > user.amount) l = user.amount;
         pool.workingSupply = pool.workingSupply + l - user.workingSupply;
@@ -284,13 +301,15 @@ contract FarmController is NeedInitialize, WhitelistedRole {
     }
 
     // Deposit tokens to Controller for reward allocation.
-    function deposit(uint256 _pid, uint256 tokenId, IUniswapV3Staker.IncentiveKey memory key)
+    function deposit(uint256 _pid, uint256 tokenId, IUniswapV3Staker.IncentiveKey memory key, IUniswapV3Staker.IncentiveKey memory lastKey)
         external
         returns (uint256 reward)
     {
-        if  (block.timestamp >= key.endTime) {
-            UniswapV3Staker.endIncentive(key);
-        }
+        require (block.timestamp > lastKey.endTime && (block.timestamp - incentivePeriod) >= lastKey.startTime, "FC: old key not valid");
+        // if  (block.timestamp >= key.endTime) {
+        //     UniswapV3Staker.endIncentive(key);
+        // }
+        _checkpoint(_pid, msg.sender, lastKey);
         _updatePool(_pid);
         reward = _updateUser(_pid, msg.sender);
         PoolInfo storage pool = poolInfo[_pid];
@@ -327,30 +346,31 @@ contract FarmController is NeedInitialize, WhitelistedRole {
                 tokenId
             );
         }
-        _checkpoint(_pid, msg.sender);
         emit Deposit(msg.sender, _pid, liquidity);
     }
 
     // Claim reward from farmer and staker inherited from Deposit
-    function claim(uint256 _pid,  IUniswapV3Staker.IncentiveKey memory key1,  IUniswapV3Staker.IncentiveKey memory key2, uint256 tokenId)
+    function claim(uint256 _pid,  IUniswapV3Staker.IncentiveKey memory key1,  IUniswapV3Staker.IncentiveKey memory key2, uint256 tokenId, IUniswapV3Staker.IncentiveKey memory lastKey)
         external
         returns (uint256 reward)
     {   
+        require (block.timestamp > lastKey.endTime && (block.timestamp - incentivePeriod) >= lastKey.startTime, "FC: old key not valid");
         if  (block.timestamp >= key1.endTime) {
             UniswapV3Staker.endIncentive(key1);
         }
+        _checkpoint(_pid, msg.sender, lastKey);
         _updatePool(_pid);
         reward = _updateUser(_pid, msg.sender);
-        _checkpoint(_pid, msg.sender);
         UniswapV3Staker.unstakeClaimRewardandStakeNew(key1, key2, tokenId, address(ppi), msg.sender);
         emit Claim(msg.sender, _pid, reward);
     }
 
     // Withdraw tokens from Controller.
-    function withdraw(uint256 _pid, uint256 tokenId, IUniswapV3Staker.IncentiveKey memory key)
+    function withdraw(uint256 _pid, uint256 tokenId, IUniswapV3Staker.IncentiveKey memory key, IUniswapV3Staker.IncentiveKey memory lastKey)
         external
         returns (uint256 reward)
     {   
+        require (block.timestamp > lastKey.endTime && (block.timestamp - incentivePeriod) >= lastKey.startTime, "FC: old key not valid");
         if  (block.timestamp >= key.endTime) {
             UniswapV3Staker.endIncentive(key);
         }
@@ -378,6 +398,7 @@ contract FarmController is NeedInitialize, WhitelistedRole {
             ,
         ) = UniswapV3Staker.deposits(tokenId);
         require(numberOfStakes == 0 || numberOfStakes == 1, "FarmController: must have 0 or 1 active incentive");
+        _checkpoint(_pid, msg.sender, lastKey);
         _updatePool(_pid);
         reward = _updateUser(_pid, msg.sender);
         if (liquidity > 0) {
@@ -392,21 +413,20 @@ contract FarmController is NeedInitialize, WhitelistedRole {
             IERC721(NonfungiblePositionManager).safeTransferFrom(address(this), address(msg.sender), tokenId);
             //TODO; maybe remove the entry of the userinfo tokenIds. ONLY for frontend
         }
-        _checkpoint(_pid, msg.sender);
         emit Withdraw(msg.sender, _pid, liquidity);
     }
 
     // kick someone from boosting if his/her locked share expired
-    function kick(uint256 _pid, address _user) external {
+    function kick(uint256 _pid, address _user, IUniswapV3Staker.IncentiveKey memory lastKey) external {
         require(
             votingEscrow.balanceOf(_user) == 0,
             "FarmController: user locked balance is not zero"
         );
         UserInfo storage user = userInfo[_pid][_user];
         uint256 oldWorkingSupply = user.workingSupply;
+        _checkpoint(_pid, _user, lastKey);
         _updatePool(_pid);
         _updateUser(_pid, _user);
-        _checkpoint(_pid, _user);
         require(
             oldWorkingSupply > user.workingSupply,
             "FarmController: user working supply is up-to-date"
